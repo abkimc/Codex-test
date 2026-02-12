@@ -1,0 +1,417 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>NetShield TD</title>
+  <style>
+    :root {
+      --bg: #0b1022;
+      --panel: #111936;
+      --accent: #50d7ff;
+      --danger: #ff6b81;
+      --ok: #71f59c;
+      --text: #e7edff;
+      --muted: #9db0d7;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: Inter, system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+      background: radial-gradient(circle at 20% 10%, #182553 0%, var(--bg) 48%);
+      color: var(--text);
+      min-height: 100vh;
+      display: grid;
+      place-items: center;
+      padding: 16px;
+    }
+    .layout {
+      width: min(1100px, 100%);
+      display: grid;
+      grid-template-columns: 1fr 320px;
+      gap: 14px;
+    }
+    .board {
+      background: #090f23;
+      border: 1px solid #2a3a77;
+      border-radius: 14px;
+      overflow: hidden;
+      position: relative;
+      box-shadow: 0 15px 35px rgba(0,0,0,0.35);
+    }
+    canvas { display: block; width: 100%; height: auto; }
+    .panel {
+      background: linear-gradient(180deg, #121b3d, #0f1632);
+      border: 1px solid #2c3d82;
+      border-radius: 14px;
+      padding: 14px;
+      box-shadow: 0 12px 28px rgba(0,0,0,0.25);
+    }
+    h1 { font-size: 1.25rem; margin: 0 0 6px 0; }
+    .muted { color: var(--muted); font-size: 0.9rem; }
+    .stats {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+      margin: 12px 0;
+    }
+    .card {
+      background: rgba(255,255,255,0.04);
+      border: 1px solid rgba(164,191,255,0.25);
+      border-radius: 10px;
+      padding: 8px;
+      font-size: 0.92rem;
+    }
+    .card strong { display: block; font-size: 1.1rem; margin-top: 2px; }
+    .actions { display: grid; gap: 8px; margin: 10px 0 14px; }
+    button {
+      border: 1px solid #5170c9;
+      background: #1f2f66;
+      color: var(--text);
+      padding: 9px;
+      border-radius: 10px;
+      font-weight: 650;
+      cursor: pointer;
+      transition: 0.2s ease;
+    }
+    button:hover { transform: translateY(-1px); filter: brightness(1.12); }
+    button.active { background: #256091; border-color: var(--accent); color: white; }
+    .log {
+      background: rgba(0,0,0,0.25);
+      border: 1px solid rgba(132,162,238,0.35);
+      border-radius: 10px;
+      padding: 9px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 0.8rem;
+      min-height: 140px;
+      max-height: 210px;
+      overflow: auto;
+      line-height: 1.3;
+      white-space: pre-wrap;
+    }
+    .tag {
+      display: inline-block;
+      padding: 2px 8px;
+      border-radius: 999px;
+      font-size: 0.78rem;
+      margin-right: 6px;
+      border: 1px solid rgba(255,255,255,0.25);
+    }
+    .warning { color: #ffd369; }
+    .danger { color: var(--danger); }
+    .good { color: var(--ok); }
+    @media (max-width: 960px) {
+      .layout { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <div class="layout">
+    <div class="board">
+      <canvas id="game" width="760" height="500"></canvas>
+    </div>
+    <aside class="panel">
+      <h1>NetShield TD</h1>
+      <div class="muted">Build towers, connect routes, survive hostile traffic waves.</div>
+      <div class="stats">
+        <div class="card">Budget <strong id="budget">0</strong></div>
+        <div class="card">Integrity <strong id="hp">0</strong></div>
+        <div class="card">Routes <strong id="routes">0</strong></div>
+        <div class="card">Wave <strong id="wave">0</strong></div>
+      </div>
+      <div id="objective" class="card"></div>
+      <div class="actions">
+        <button id="buildBtn">Build Tower (20)</button>
+        <button id="connectBtn">Connect Mode: Off</button>
+        <button id="upgradeBtn">Upgrade Selected (15)</button>
+        <button id="nextBtn">Start Next Wave</button>
+        <button id="resetBtn">Reset</button>
+      </div>
+      <div class="log" id="log"></div>
+    </aside>
+  </div>
+
+<script>
+(() => {
+  const canvas = document.getElementById('game');
+  const ctx = canvas.getContext('2d');
+  const $ = (id) => document.getElementById(id);
+
+  const state = {
+    towers: [],
+    links: [],
+    selected: null,
+    connectMode: false,
+    pendingConnect: null,
+    budget: 100,
+    hp: 100,
+    wave: 0,
+    routeLimits: { min: 2, max: 7 },
+    runningWave: false,
+    gameOver: false
+  };
+
+  const trafficProfiles = [
+    { name: 'Normal', color: '#7ec8ff', flow: 22, spikes: 4, stealth: 0, precision: 0 },
+    { name: 'Burst', color: '#ffd45c', flow: 18, spikes: 15, stealth: 0, precision: 0 },
+    { name: 'DDoS', color: '#ff6b81', flow: 38, spikes: 25, stealth: 0, precision: 0 },
+    { name: 'Stealth', color: '#bf9cff', flow: 12, spikes: 6, stealth: 0.45, precision: 0 },
+    { name: 'Priority Hijack', color: '#7affd7', flow: 20, spikes: 10, stealth: 0.1, precision: 0.35 }
+  ];
+
+  function log(msg) {
+    const line = `[${new Date().toLocaleTimeString()}] ${msg}`;
+    const box = $('log');
+    box.textContent = `${line}\n${box.textContent}`.slice(0, 3500);
+  }
+
+  function addTower(x, y) {
+    if (state.budget < 20) return log('⚠ Not enough budget for a new tower.');
+    state.towers.push({
+      id: crypto.randomUUID(),
+      x, y,
+      level: 1,
+      cap: 20,
+      detect: 0.6,
+      type: 'Relay'
+    });
+    state.budget -= 20;
+    log('Built new tower (+route options, +capacity).');
+    refresh();
+  }
+
+  function distance(a, b) {
+    return Math.hypot(a.x - b.x, a.y - b.y);
+  }
+
+  function connect(a, b) {
+    if (!a || !b || a.id === b.id) return;
+    if (distance(a, b) > 180) return log('⚠ Towers are too far apart for a direct link.');
+    const key = [a.id, b.id].sort().join('::');
+    if (state.links.some((l) => l.key === key)) return log('⚠ Route already exists.');
+    state.links.push({ key, a: a.id, b: b.id, quality: 1 });
+    log('Created secure route between towers.');
+    refresh();
+  }
+
+  function getTowerAt(x, y) {
+    return state.towers.find((t) => Math.hypot(t.x - x, t.y - y) < 20);
+  }
+
+  function calcNetworkStats(profile) {
+    const towers = state.towers.length;
+    const routes = state.links.length;
+    const baseCap = state.towers.reduce((s, t) => s + t.cap, 0);
+    const avgDetect = towers ? state.towers.reduce((s, t) => s + t.detect, 0) / towers : 0;
+
+    const meshBonus = Math.min(routes, towers * 2) * 2;
+    const routePenalty = routes < state.routeLimits.min ? (state.routeLimits.min - routes) * 8 : 0;
+    const overRoutePenalty = routes > state.routeLimits.max ? (routes - state.routeLimits.max) * 5 : 0;
+
+    const incoming = profile.flow + Math.random() * profile.spikes + state.wave * 2.8;
+    const stealthLeak = incoming * profile.stealth * (1 - avgDetect);
+    const precisionBypass = incoming * profile.precision * Math.max(0, 1 - routes / Math.max(1, towers));
+
+    const effectiveDefense = baseCap + meshBonus - routePenalty - overRoutePenalty;
+    const blocked = Math.max(0, Math.min(incoming, effectiveDefense));
+    const leaked = Math.max(0, incoming - blocked + stealthLeak + precisionBypass);
+
+    return {
+      incoming: Math.round(incoming),
+      blocked: Math.round(blocked),
+      leaked: Math.round(leaked),
+      routePenalty,
+      overRoutePenalty
+    };
+  }
+
+  function nextWave() {
+    if (state.runningWave || state.gameOver) return;
+    state.runningWave = true;
+    state.wave += 1;
+
+    const p = trafficProfiles[Math.floor(Math.random() * trafficProfiles.length)];
+    const result = calcNetworkStats(p);
+
+    state.hp -= result.leaked;
+    state.budget += 12 + Math.max(0, result.blocked - result.leaked);
+
+    log(`Wave ${state.wave}: ${p.name} traffic <${result.incoming}> | blocked ${result.blocked}, leaked ${result.leaked}`);
+    if (result.routePenalty > 0) log(`⚠ Too few routes: build at least ${state.routeLimits.min}.`);
+    if (result.overRoutePenalty > 0) log(`⚠ Too many routes: keep under ${state.routeLimits.max}.`);
+
+    if (state.hp <= 0) {
+      state.hp = 0;
+      state.gameOver = true;
+      log('✖ Network collapse. Adjust route count and tower upgrades.');
+    } else {
+      if (state.wave % 3 === 0) {
+        state.routeLimits.min = Math.min(6, state.routeLimits.min + 1);
+        state.routeLimits.max = Math.min(12, state.routeLimits.max + 1);
+        log('Routing policy updated: traffic scale increased.');
+      }
+      if (state.wave % 4 === 0) {
+        state.budget += 12;
+        log('Grant approved: +12 budget for infrastructure.');
+      }
+    }
+
+    state.runningWave = false;
+    refresh();
+  }
+
+  function upgradeSelected() {
+    if (!state.selected) return log('⚠ Select a tower first.');
+    const t = state.towers.find((x) => x.id === state.selected);
+    if (!t) return;
+    const cost = 10 + t.level * 5;
+    if (state.budget < cost) return log(`⚠ Need ${cost} budget to upgrade.`);
+    t.level += 1;
+    t.cap += 8;
+    t.detect = Math.min(0.95, t.detect + 0.08);
+    state.budget -= cost;
+    log(`Upgraded tower to L${t.level}: cap ${t.cap}, detection ${(t.detect * 100).toFixed(0)}%.`);
+    refresh();
+  }
+
+  function drawGrid() {
+    const gap = 32;
+    ctx.strokeStyle = 'rgba(110,140,220,0.14)';
+    ctx.lineWidth = 1;
+    for (let x = 0; x < canvas.width; x += gap) {
+      ctx.beginPath();
+      ctx.moveTo(x, 0); ctx.lineTo(x, canvas.height); ctx.stroke();
+    }
+    for (let y = 0; y < canvas.height; y += gap) {
+      ctx.beginPath();
+      ctx.moveTo(0, y); ctx.lineTo(canvas.width, y); ctx.stroke();
+    }
+  }
+
+  function draw() {
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    drawGrid();
+
+    for (const l of state.links) {
+      const a = state.towers.find((t) => t.id === l.a);
+      const b = state.towers.find((t) => t.id === l.b);
+      if (!a || !b) continue;
+      ctx.strokeStyle = '#4bc7ff';
+      ctx.lineWidth = 3;
+      ctx.beginPath();
+      ctx.moveTo(a.x, a.y);
+      ctx.lineTo(b.x, b.y);
+      ctx.stroke();
+    }
+
+    for (const t of state.towers) {
+      const selected = state.selected === t.id;
+      ctx.beginPath();
+      ctx.fillStyle = selected ? '#79f0ff' : '#4e73ff';
+      ctx.arc(t.x, t.y, 17 + t.level, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.strokeStyle = selected ? '#ffffff' : '#b9ccff';
+      ctx.lineWidth = 2;
+      ctx.stroke();
+
+      ctx.fillStyle = '#ecf2ff';
+      ctx.font = '12px Inter';
+      ctx.fillText(`L${t.level}`, t.x - 8, t.y + 4);
+      ctx.fillStyle = 'rgba(120,180,255,0.14)';
+      ctx.beginPath();
+      ctx.arc(t.x, t.y, 80, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    if (state.gameOver) {
+      ctx.fillStyle = 'rgba(0,0,0,0.6)';
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      ctx.fillStyle = '#ff8fa3';
+      ctx.font = '700 44px Inter';
+      ctx.fillText('NETWORK DOWN', 220, 230);
+      ctx.font = '20px Inter';
+      ctx.fillStyle = '#e9ecff';
+      ctx.fillText('Press Reset and rebalance route count.', 210, 270);
+    }
+  }
+
+  function refresh() {
+    $('budget').textContent = Math.floor(state.budget);
+    $('hp').textContent = Math.floor(state.hp);
+    $('routes').textContent = state.links.length;
+    $('wave').textContent = state.wave;
+    $('objective').innerHTML = `
+      <span class="tag">Route Policy</span>
+      Keep routes between <b>${state.routeLimits.min}</b> and <b>${state.routeLimits.max}</b>.
+      <br><span class="muted">Too few = congestion, too many = overhead and fragile latency.</span>
+    `;
+    $('connectBtn').textContent = `Connect Mode: ${state.connectMode ? 'On' : 'Off'}`;
+    $('connectBtn').classList.toggle('active', state.connectMode);
+    draw();
+  }
+
+  function resetGame() {
+    state.towers = [];
+    state.links = [];
+    state.selected = null;
+    state.pendingConnect = null;
+    state.connectMode = false;
+    state.budget = 100;
+    state.hp = 100;
+    state.wave = 0;
+    state.routeLimits = { min: 2, max: 7 };
+    state.runningWave = false;
+    state.gameOver = false;
+    $('log').textContent = '';
+    log('Welcome operator. Build a resilient network before launching waves.');
+    refresh();
+  }
+
+  canvas.addEventListener('click', (e) => {
+    if (state.gameOver) return;
+    const rect = canvas.getBoundingClientRect();
+    const x = ((e.clientX - rect.left) / rect.width) * canvas.width;
+    const y = ((e.clientY - rect.top) / rect.height) * canvas.height;
+
+    const hit = getTowerAt(x, y);
+
+    if (state.connectMode) {
+      if (!hit) return;
+      if (!state.pendingConnect) {
+        state.pendingConnect = hit.id;
+        state.selected = hit.id;
+        log('Select second tower to establish route.');
+      } else {
+        const a = state.towers.find((t) => t.id === state.pendingConnect);
+        connect(a, hit);
+        state.pendingConnect = null;
+      }
+      refresh();
+      return;
+    }
+
+    if (hit) {
+      state.selected = hit.id;
+      log(`Selected tower L${hit.level} (cap ${hit.cap}, detect ${(hit.detect * 100).toFixed(0)}%).`);
+    } else {
+      addTower(x, y);
+    }
+    refresh();
+  });
+
+  $('buildBtn').addEventListener('click', () => log('Tip: click empty board space to place a tower.'));
+  $('connectBtn').addEventListener('click', () => {
+    state.connectMode = !state.connectMode;
+    state.pendingConnect = null;
+    log(state.connectMode ? 'Connect mode enabled.' : 'Connect mode disabled.');
+    refresh();
+  });
+  $('upgradeBtn').addEventListener('click', upgradeSelected);
+  $('nextBtn').addEventListener('click', nextWave);
+  $('resetBtn').addEventListener('click', resetGame);
+
+  resetGame();
+})();
+</script>
+</body>
+</html>
